@@ -76,7 +76,44 @@ let config = RustViewConfig {
 
 ## Theming
 
-RustView uses CSS custom properties for theming. Customize colors with the `Theme` struct:
+RustView ships with two built-in presets: **dark** (default) and **light**. You can use them
+directly or override individual fields for a fully custom theme.
+
+### Built-in Presets
+
+```rust
+use rustview::prelude::*;
+
+// Dark theme — default (navy background, coral accent)
+let config = RustViewConfig {
+    theme: Theme::dark(),   // same as Theme::default()
+    ..Default::default()
+};
+
+// Light theme — white background, same coral accent
+let config = RustViewConfig {
+    theme: Theme::light(),
+    ..Default::default()
+};
+```
+
+### Customizing a Preset
+
+Start from a preset and override only the fields you need:
+
+```rust
+let theme = Theme {
+    primary: "#6c5ce7".into(),   // change only the accent color
+    ..Theme::dark()
+};
+
+let config = RustViewConfig {
+    theme,
+    ..Default::default()
+};
+```
+
+### Fully Custom Theme
 
 ```rust
 let theme = Theme {
@@ -86,6 +123,8 @@ let theme = Theme {
     secondary_bg: "#16213e".into(),
     border: "#0f3460".into(),
     text_secondary: "#8899aa".into(),
+    surface: "#0d0d1f".into(),
+    code_fg: "#c0caf5".into(),
 };
 
 let config = RustViewConfig {
@@ -94,22 +133,16 @@ let config = RustViewConfig {
 };
 ```
 
-| Field | CSS Variable | Default | Description |
-|-------|-------------|---------|-------------|
-| `background` | `--rustview-bg` | `#0e1117` | Page background |
-| `foreground` | `--rustview-fg` | `#fafafa` | Primary text color |
-| `primary` | `--rustview-primary` | `#ff4b4b` | Accent color (buttons, links, charts) |
-| `secondary_bg` | `--rustview-secondary-bg` | `#262730` | Input/card background |
-| `border` | `--rustview-border` | `#4a4a5a` | Border color |
-| `text_secondary` | `--rustview-text-secondary` | `#a3a8b8` | Labels and secondary text |
-
-### Default Dark Theme
-
-The default theme is a dark design inspired by Streamlit's dark mode:
-
-- Dark navy background (`#0e1117`)
-- High-contrast white text (`#fafafa`)
-- Coral accent (`#ff4b4b`)
+| Field | CSS Variable | Dark default | Light default | Description |
+|-------|-------------|-------------|--------------|-------------|
+| `background` | `--rustview-bg` | `#0e1117` | `#ffffff` | Page background |
+| `foreground` | `--rustview-fg` | `#fafafa` | `#0e1117` | Primary text color |
+| `primary` | `--rustview-primary` | `#ff4b4b` | `#ff4b4b` | Accent color (buttons, links, charts) |
+| `secondary_bg` | `--rustview-secondary-bg` | `#262730` | `#f0f2f6` | Input/card background |
+| `border` | `--rustview-border` | `#4a4a5a` | `#d0d3de` | Border color |
+| `text_secondary` | `--rustview-text-secondary` | `#a3a8b8` | `#6c717e` | Labels and secondary text |
+| `surface` | `--rustview-surface` | `#1a1b26` | `#e8eaf0` | Deep surface (code blocks, modal, table headers, sidebar) |
+| `code_fg` | `--rustview-code-fg` | `#c0caf5` | `#1e2040` | Monospace code/JSON text color |
 
 ### Custom Theme Example — Ocean Theme
 
@@ -121,6 +154,8 @@ let theme = Theme {
     secondary_bg: "#112240".into(),
     border: "#233554".into(),
     text_secondary: "#8892b0".into(),
+    surface: "#060d1a".into(),
+    code_fg: "#a8d8ea".into(),
 };
 ```
 

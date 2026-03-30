@@ -1,4 +1,4 @@
-/// Comprehensive RustView Showcase — demonstrates ALL available widgets and layouts.
+/// Comprehensive RustView Showcase, demonstrates ALL available widgets and layouts.
 ///
 /// Run with: cargo run --example showcase
 use rustview::prelude::*;
@@ -408,6 +408,7 @@ fn main() {
 
     let config = RustViewConfig {
         layout,
+        // theme: Theme::light(),
         open_browser: true,
         ..Default::default()
     };

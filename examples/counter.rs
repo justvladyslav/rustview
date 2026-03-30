@@ -1,4 +1,4 @@
-/// Counter example with session state — matches the design document §8.3.
+/// Counter example with session state
 use rustview::prelude::*;
 
 fn counter_app(ui: &mut Ui) {

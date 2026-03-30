@@ -116,26 +116,57 @@ impl Layout {
 
 /// Theme colors for RustView.
 ///
-/// Override any CSS custom property to customize the look of the UI.
-/// Unset fields use the default dark theme values.
+/// Use the built-in presets or customize individual fields:
+///
+/// ```rust
+/// use rustview::server::Theme;
+///
+/// // Built-in presets:
+/// let dark  = Theme::dark();   // default
+/// let light = Theme::light();
+///
+/// // Custom — start from a preset and override fields:
+/// let custom = Theme {
+///     primary: "#6c5ce7".to_string(),
+///     ..Theme::dark()
+/// };
+/// ```
 #[derive(Debug, Clone)]
 pub struct Theme {
-    /// Background color (default: `#0e1117`)
+    /// Background color
     pub background: String,
-    /// Foreground text color (default: `#fafafa`)
+    /// Foreground text color
     pub foreground: String,
-    /// Primary accent color (default: `#ff4b4b`)
+    /// Primary accent color (buttons, links, charts)
     pub primary: String,
-    /// Secondary background color for inputs/cards (default: `#262730`)
+    /// Secondary background color for inputs/cards
     pub secondary_bg: String,
-    /// Border color (default: `#4a4a5a`)
+    /// Border color
     pub border: String,
-    /// Label/secondary text color (default: `#a3a8b8`)
+    /// Label/secondary text color
     pub text_secondary: String,
+    /// Deep surface color used for code blocks, modal dialogs, table headers, sidebar, expander headers
+    pub surface: String,
+    /// Monospace code/JSON text color
+    pub code_fg: String,
 }
 
 impl Default for Theme {
+    /// Returns the dark theme (same as [`Theme::dark()`]).
     fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl Theme {
+    /// Dark theme — navy background with coral accent. This is the default.
+    ///
+    /// ```
+    /// use rustview::server::Theme;
+    /// let theme = Theme::dark();
+    /// assert_eq!(theme.background, "#0e1117");
+    /// ```
+    pub fn dark() -> Self {
         Self {
             background: "#0e1117".to_string(),
             foreground: "#fafafa".to_string(),
@@ -143,17 +174,38 @@ impl Default for Theme {
             secondary_bg: "#262730".to_string(),
             border: "#4a4a5a".to_string(),
             text_secondary: "#a3a8b8".to_string(),
+            surface: "#1a1b26".to_string(),
+            code_fg: "#c0caf5".to_string(),
         }
     }
-}
 
-impl Theme {
+    /// Light theme — white background with the same coral accent.
+    ///
+    /// ```
+    /// use rustview::server::Theme;
+    /// let theme = Theme::light();
+    /// assert_eq!(theme.background, "#ffffff");
+    /// ```
+    pub fn light() -> Self {
+        Self {
+            background: "#ffffff".to_string(),
+            foreground: "#0e1117".to_string(),
+            primary: "#ff4b4b".to_string(),
+            secondary_bg: "#f0f2f6".to_string(),
+            border: "#d0d3de".to_string(),
+            text_secondary: "#6c717e".to_string(),
+            surface: "#e8eaf0".to_string(),
+            code_fg: "#1e2040".to_string(),
+        }
+    }
+
     /// Generate CSS custom property declarations for this theme.
     pub fn to_css_vars(&self) -> String {
         format!(
-            ":root {{\n  --rustview-bg: {};\n  --rustview-fg: {};\n  --rustview-primary: {};\n  --rustview-secondary-bg: {};\n  --rustview-border: {};\n  --rustview-text-secondary: {};\n}}",
+            ":root {{\n  --rustview-bg: {};\n  --rustview-fg: {};\n  --rustview-primary: {};\n  --rustview-secondary-bg: {};\n  --rustview-border: {};\n  --rustview-text-secondary: {};\n  --rustview-surface: {};\n  --rustview-code-fg: {};\n}}",
             self.background, self.foreground, self.primary,
-            self.secondary_bg, self.border, self.text_secondary
+            self.secondary_bg, self.border, self.text_secondary,
+            self.surface, self.code_fg
         )
     }
 }
@@ -520,6 +572,8 @@ const CSS: &str = r#"
     --rustview-secondary-bg: #262730;
     --rustview-border: #4a4a5a;
     --rustview-text-secondary: #a3a8b8;
+    --rustview-surface: #1a1b26;
+    --rustview-code-fg: #c0caf5;
     --rustview-max-width: 800px;
     --rustview-padding: 2rem;
 }
@@ -566,10 +620,10 @@ body {
 
 /* Progress */
 .rustview-progress-bg {
-    width: 100%; height: 0.5rem; background: #262730; border-radius: 0.25rem; overflow: hidden;
+    width: 100%; height: 0.5rem; background: var(--rustview-secondary-bg); border-radius: 0.25rem; overflow: hidden;
 }
-.rustview-progress-fill { height: 100%; background: #ff4b4b; transition: width 0.3s ease; }
-.rustview-progress span { font-size: 0.75rem; color: #a3a8b8; }
+.rustview-progress-fill { height: 100%; background: var(--rustview-primary); transition: width 0.3s ease; }
+.rustview-progress span { font-size: 0.75rem; color: var(--rustview-text-secondary); }
 
 /* Alert */
 .rustview-alert {
@@ -579,88 +633,88 @@ body {
 .rustview-alert-icon { font-size: 1.25rem; }
 
 /* Number Input */
-.rustview-number-input label { display: block; font-size: 0.875rem; color: #a3a8b8; margin-bottom: 0.25rem; }
+.rustview-number-input label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.25rem; }
 .rustview-number-input input[type="number"] {
-    width: 100%; padding: 0.5rem 0.75rem; background: #262730; border: 1px solid #4a4a5a;
-    border-radius: 0.375rem; color: #fafafa; font-size: 1rem; outline: none;
+    width: 100%; padding: 0.5rem 0.75rem; background: var(--rustview-secondary-bg); border: 1px solid var(--rustview-border);
+    border-radius: 0.375rem; color: var(--rustview-fg); font-size: 1rem; outline: none;
 }
-.rustview-number-input input:focus { border-color: #ff4b4b; }
+.rustview-number-input input:focus { border-color: var(--rustview-primary); }
 
 /* Integer Input */
-.rustview-int-input label { display: block; font-size: 0.875rem; color: #a3a8b8; margin-bottom: 0.25rem; }
+.rustview-int-input label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.25rem; }
 .rustview-int-input input[type="number"] {
-    width: 100%; padding: 0.5rem 0.75rem; background: #262730; border: 1px solid #4a4a5a;
-    border-radius: 0.375rem; color: #fafafa; font-size: 1rem; outline: none;
+    width: 100%; padding: 0.5rem 0.75rem; background: var(--rustview-secondary-bg); border: 1px solid var(--rustview-border);
+    border-radius: 0.375rem; color: var(--rustview-fg); font-size: 1rem; outline: none;
 }
-.rustview-int-input input:focus { border-color: #ff4b4b; }
+.rustview-int-input input:focus { border-color: var(--rustview-primary); }
 
 /* Toggle */
 .rustview-toggle label { display: flex; align-items: center; gap: 0.75rem; cursor: pointer; }
 .rustview-toggle input[type="checkbox"] { display: none; }
 .rustview-toggle-track {
-    width: 2.5rem; height: 1.25rem; background: #4a4a5a; border-radius: 0.625rem;
+    width: 2.5rem; height: 1.25rem; background: var(--rustview-border); border-radius: 0.625rem;
     position: relative; transition: background 0.2s ease;
 }
 .rustview-toggle-track::after {
     content: ''; position: absolute; top: 0.125rem; left: 0.125rem;
-    width: 1rem; height: 1rem; background: #fafafa; border-radius: 50%;
+    width: 1rem; height: 1rem; background: var(--rustview-fg); border-radius: 50%;
     transition: transform 0.2s ease;
 }
-.rustview-toggle input:checked + .rustview-toggle-track { background: #ff4b4b; }
+.rustview-toggle input:checked + .rustview-toggle-track { background: var(--rustview-primary); }
 .rustview-toggle input:checked + .rustview-toggle-track::after { transform: translateX(1.25rem); }
 
 /* Radio */
-.rustview-radio > label { display: block; font-size: 0.875rem; color: #a3a8b8; margin-bottom: 0.5rem; }
+.rustview-radio > label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.5rem; }
 .rustview-radio-options { display: flex; flex-direction: column; gap: 0.375rem; }
 .rustview-radio-options label {
     display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9375rem;
 }
-.rustview-radio-options input[type="radio"] { accent-color: #ff4b4b; }
+.rustview-radio-options input[type="radio"] { accent-color: var(--rustview-primary); }
 
 /* Select */
 .rustview-select label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.25rem; }
 .rustview-select select {
-    width: 100%; padding: 0.5rem 0.75rem; background: #262730; border: 1px solid #4a4a5a;
-    border-radius: 0.375rem; color: #fafafa; font-size: 1rem; outline: none;
+    width: 100%; padding: 0.5rem 0.75rem; background: var(--rustview-secondary-bg); border: 1px solid var(--rustview-border);
+    border-radius: 0.375rem; color: var(--rustview-fg); font-size: 1rem; outline: none;
     appearance: none; -webkit-appearance: none;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23a3a8b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
     background-repeat: no-repeat; background-position: right 0.75rem center;
 }
-.rustview-select select:focus { border-color: #ff4b4b; }
+.rustview-select select:focus { border-color: var(--rustview-primary); }
 
 /* Multi-Select */
-.rustview-multi-select label { display: block; font-size: 0.875rem; color: #a3a8b8; margin-bottom: 0.25rem; }
+.rustview-multi-select label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.25rem; }
 .rustview-multi-select select {
-    width: 100%; padding: 0.5rem; background: #262730; border: 1px solid #4a4a5a;
-    border-radius: 0.375rem; color: #fafafa; font-size: 1rem; outline: none;
+    width: 100%; padding: 0.5rem; background: var(--rustview-secondary-bg); border: 1px solid var(--rustview-border);
+    border-radius: 0.375rem; color: var(--rustview-fg); font-size: 1rem; outline: none;
     min-height: 5rem;
 }
-.rustview-multi-select select:focus { border-color: #ff4b4b; }
+.rustview-multi-select select:focus { border-color: var(--rustview-primary); }
 .rustview-multi-select select option { padding: 0.25rem 0.5rem; }
 
 /* Text Area */
-.rustview-text-area label { display: block; font-size: 0.875rem; color: #a3a8b8; margin-bottom: 0.25rem; }
+.rustview-text-area label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.25rem; }
 .rustview-text-area textarea {
-    width: 100%; padding: 0.5rem 0.75rem; background: #262730; border: 1px solid #4a4a5a;
-    border-radius: 0.375rem; color: #fafafa; font-size: 1rem; outline: none;
+    width: 100%; padding: 0.5rem 0.75rem; background: var(--rustview-secondary-bg); border: 1px solid var(--rustview-border);
+    border-radius: 0.375rem; color: var(--rustview-fg); font-size: 1rem; outline: none;
     resize: vertical; font-family: inherit;
 }
-.rustview-text-area textarea:focus { border-color: #ff4b4b; }
+.rustview-text-area textarea:focus { border-color: var(--rustview-primary); }
 
 /* Color Picker */
-.rustview-color-picker label { display: block; font-size: 0.875rem; color: #a3a8b8; margin-bottom: 0.25rem; }
+.rustview-color-picker label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.25rem; }
 .rustview-color-picker input[type="color"] {
-    width: 3rem; height: 2rem; padding: 0; border: 1px solid #4a4a5a;
+    width: 3rem; height: 2rem; padding: 0; border: 1px solid var(--rustview-border);
     border-radius: 0.375rem; cursor: pointer; background: transparent;
 }
 
 /* Download Button */
 .rustview-download-button a { text-decoration: none; }
 .rustview-download-button button {
-    padding: 0.5rem 1.5rem; background: #262730; color: #fafafa; border: 1px solid #4a4a5a;
+    padding: 0.5rem 1.5rem; background: var(--rustview-secondary-bg); color: var(--rustview-fg); border: 1px solid var(--rustview-border);
     border-radius: 0.375rem; font-size: 0.875rem; cursor: pointer; font-weight: 500;
 }
-.rustview-download-button button:hover { background: #363740; border-color: #ff4b4b; }
+.rustview-download-button button:hover { filter: brightness(1.1); border-color: var(--rustview-primary); }
 
 /* Link */
 .rustview-link a {
@@ -670,40 +724,40 @@ body {
 .rustview-link a:hover { color: #ff6b6b; text-decoration: underline; }
 
 /* Heading */
-.rustview-heading h1 { font-size: 2rem; font-weight: 700; color: #fafafa; line-height: 1.3; }
+.rustview-heading h1 { font-size: 2rem; font-weight: 700; color: var(--rustview-fg); line-height: 1.3; }
 
 /* Subheading */
-.rustview-subheading h2 { font-size: 1.5rem; font-weight: 600; color: #fafafa; line-height: 1.3; }
+.rustview-subheading h2 { font-size: 1.5rem; font-weight: 600; color: var(--rustview-fg); line-height: 1.3; }
 
 /* Caption */
-.rustview-caption small { font-size: 0.8125rem; color: #808495; }
+.rustview-caption small { font-size: 0.8125rem; color: var(--rustview-text-secondary); }
 
 /* Code Block */
 .rustview-code pre {
-    background: #1a1b26; border: 1px solid #2d2f3a; border-radius: 0.375rem;
+    background: var(--rustview-surface); border: 1px solid var(--rustview-border); border-radius: 0.375rem;
     padding: 1rem; overflow-x: auto; font-size: 0.875rem; line-height: 1.5;
 }
-.rustview-code code { color: #c0caf5; font-family: 'Fira Code', 'Cascadia Code', monospace; }
+.rustview-code code { color: var(--rustview-code-fg); font-family: 'Fira Code', 'Cascadia Code', monospace; }
 
 /* JSON */
 .rustview-json pre {
-    background: #1a1b26; border: 1px solid #2d2f3a; border-radius: 0.375rem;
+    background: var(--rustview-surface); border: 1px solid var(--rustview-border); border-radius: 0.375rem;
     padding: 1rem; overflow-x: auto; font-size: 0.875rem; line-height: 1.5;
 }
-.rustview-json code { color: #c0caf5; font-family: 'Fira Code', 'Cascadia Code', monospace; }
+.rustview-json code { color: var(--rustview-code-fg); font-family: 'Fira Code', 'Cascadia Code', monospace; }
 
 /* Table */
 .rustview-table table {
     width: 100%; border-collapse: collapse; font-size: 0.9375rem;
 }
 .rustview-table th {
-    text-align: left; padding: 0.5rem 0.75rem; background: #1a1b26;
-    border-bottom: 2px solid #4a4a5a; font-weight: 600; color: #a3a8b8;
+    text-align: left; padding: 0.5rem 0.75rem; background: var(--rustview-surface);
+    border-bottom: 2px solid var(--rustview-border); font-weight: 600; color: var(--rustview-text-secondary);
 }
 .rustview-table td {
-    padding: 0.5rem 0.75rem; border-bottom: 1px solid #262730;
+    padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--rustview-border);
 }
-.rustview-table tr:hover td { background: rgba(255, 255, 255, 0.03); }
+.rustview-table tr:hover td { background: rgba(128, 128, 128, 0.08); }
 
 /* Dataframe */
 .rustview-dataframe-title {
@@ -738,7 +792,7 @@ body {
     background: var(--rustview-secondary-bg);
 }
 .rustview-dataframe-num { text-align: right; }
-.rustview-dataframe tr:hover td { background: rgba(255, 255, 255, 0.03); }
+.rustview-dataframe tr:hover td { background: rgba(128, 128, 128, 0.08); }
 .rustview-dataframe-shape {
     font-size: 0.75rem; color: var(--rustview-text-secondary);
     margin-top: 0.25rem; text-align: right;
@@ -746,7 +800,7 @@ body {
 
 /* Spinner */
 .rustview-spinner {
-    display: flex; align-items: center; gap: 0.5rem; color: #a3a8b8;
+    display: flex; align-items: center; gap: 0.5rem; color: var(--rustview-text-secondary);
 }
 .rustview-spinner-icon {
     display: inline-block; font-size: 1.25rem;
@@ -758,8 +812,8 @@ body {
 .rustview-metric {
     display: flex; flex-direction: column; gap: 0.125rem;
 }
-.rustview-metric-label { font-size: 0.875rem; color: #a3a8b8; }
-.rustview-metric-value { font-size: 2rem; font-weight: 700; color: #fafafa; }
+.rustview-metric-label { font-size: 0.875rem; color: var(--rustview-text-secondary); }
+.rustview-metric-value { font-size: 2rem; font-weight: 700; color: var(--rustview-fg); }
 .rustview-metric-delta { font-size: 0.875rem; font-weight: 500; }
 .rustview-metric-delta-positive { color: #50fa7b; }
 .rustview-metric-delta-negative { color: #ff5555; }
@@ -771,7 +825,7 @@ body {
 
 /* Divider */
 .rustview-divider hr {
-    border: none; border-top: 1px solid #2d2f3a; margin: 0.5rem 0;
+    border: none; border-top: 1px solid var(--rustview-border); margin: 0.5rem 0;
 }
 
 /* Layout: Columns */
@@ -781,18 +835,18 @@ body {
 /* Layout: Sidebar */
 .rustview-sidebar {
     position: fixed; top: 0; left: 0; width: 280px; height: 100vh;
-    background: #161822; padding: 2rem 1rem; overflow-y: auto;
-    border-right: 1px solid #2d2f3a; z-index: 100;
+    background: var(--rustview-surface); padding: 2rem 1rem; overflow-y: auto;
+    border-right: 1px solid var(--rustview-border); z-index: 100;
     display: flex; flex-direction: column; gap: 1rem;
 }
 body:has(.rustview-sidebar) { padding-left: 300px; }
 
 /* Layout: Expander */
 .rustview-expander details {
-    border: 1px solid #2d2f3a; border-radius: 0.375rem; overflow: hidden;
+    border: 1px solid var(--rustview-border); border-radius: 0.375rem; overflow: hidden;
 }
 .rustview-expander summary {
-    padding: 0.75rem 1rem; background: #1a1b26; cursor: pointer;
+    padding: 0.75rem 1rem; background: var(--rustview-surface); cursor: pointer;
     font-weight: 500; list-style: none;
 }
 .rustview-expander summary::before { content: '▶ '; font-size: 0.75rem; }
@@ -803,53 +857,52 @@ body:has(.rustview-sidebar) { padding-left: 300px; }
 
 /* Layout: Tabs */
 .rustview-tab-bar {
-    display: flex; gap: 0; border-bottom: 2px solid #2d2f3a; margin-bottom: 1rem;
+    display: flex; gap: 0; border-bottom: 2px solid var(--rustview-border); margin-bottom: 1rem;
 }
 .rustview-tab-bar button {
     padding: 0.5rem 1rem; background: none; border: none;
-    color: #a3a8b8; cursor: pointer; font-size: 0.9375rem;
+    color: var(--rustview-text-secondary); cursor: pointer; font-size: 0.9375rem;
     border-bottom: 2px solid transparent; margin-bottom: -2px;
     transition: color 0.2s, border-color 0.2s;
 }
-.rustview-tab-bar button:hover { color: #fafafa; }
-.rustview-tab-bar button.active { color: #ff4b4b; border-bottom-color: #ff4b4b; }
+.rustview-tab-bar button:hover { color: var(--rustview-fg); }
+.rustview-tab-bar button.active { color: var(--rustview-primary); border-bottom-color: var(--rustview-primary); }
 .rustview-tab-content {
     display: flex; flex-direction: column; gap: 0.5rem;
 }
 
 /* Layout: Container */
 .rustview-container {
-    border: 1px solid #2d2f3a; border-radius: 0.375rem; padding: 1rem;
+    border: 1px solid var(--rustview-border); border-radius: 0.375rem; padding: 1rem;
     display: flex; flex-direction: column; gap: 0.5rem;
 }
 
 /* Date Picker */
-.rustview-date-picker label { display: block; font-size: 0.875rem; color: #a3a8b8; margin-bottom: 0.25rem; }
+.rustview-date-picker label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.25rem; }
 .rustview-date-picker input[type="date"] {
-    width: 100%; padding: 0.5rem 0.75rem; background: #262730; border: 1px solid #4a4a5a;
-    border-radius: 0.375rem; color: #fafafa; font-size: 1rem; outline: none;
-    color-scheme: dark;
+    width: 100%; padding: 0.5rem 0.75rem; background: var(--rustview-secondary-bg); border: 1px solid var(--rustview-border);
+    border-radius: 0.375rem; color: var(--rustview-fg); font-size: 1rem; outline: none;
 }
-.rustview-date-picker input:focus { border-color: #ff4b4b; }
+.rustview-date-picker input:focus { border-color: var(--rustview-primary); }
 
 /* File Upload */
-.rustview-file-upload label { display: block; font-size: 0.875rem; color: #a3a8b8; margin-bottom: 0.25rem; }
+.rustview-file-upload label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.25rem; }
 .rustview-file-upload input[type="file"] {
-    width: 100%; padding: 0.5rem; background: #262730; border: 1px solid #4a4a5a;
-    border-radius: 0.375rem; color: #fafafa; font-size: 0.875rem;
+    width: 100%; padding: 0.5rem; background: var(--rustview-secondary-bg); border: 1px solid var(--rustview-border);
+    border-radius: 0.375rem; color: var(--rustview-fg); font-size: 0.875rem;
     cursor: pointer;
 }
 .rustview-file-upload input[type="file"]::file-selector-button {
-    padding: 0.375rem 0.75rem; background: #ff4b4b; color: white; border: none;
+    padding: 0.375rem 0.75rem; background: var(--rustview-primary); color: white; border: none;
     border-radius: 0.25rem; cursor: pointer; font-size: 0.8125rem; margin-right: 0.5rem;
 }
 .rustview-file-upload input[type="file"]::file-selector-button:hover { background: #ff6b6b; }
 
 /* Image Upload */
-.rustview-image-upload label { display: block; font-size: 0.875rem; color: #a3a8b8; margin-bottom: 0.25rem; }
+.rustview-image-upload label { display: block; font-size: 0.875rem; color: var(--rustview-text-secondary); margin-bottom: 0.25rem; }
 .rustview-image-upload input[type="file"] {
-    width: 100%; padding: 0.5rem; background: #262730; border: 1px solid #4a4a5a;
-    border-radius: 0.375rem; color: #fafafa; font-size: 0.875rem;
+    width: 100%; padding: 0.5rem; background: var(--rustview-secondary-bg); border: 1px solid var(--rustview-border);
+    border-radius: 0.375rem; color: var(--rustview-fg); font-size: 0.875rem;
     cursor: pointer;
 }
 .rustview-image-upload input[type="file"]::file-selector-button {
@@ -864,12 +917,12 @@ body:has(.rustview-sidebar) { padding-left: 300px; }
 
 /* Form */
 .rustview-form {
-    border: 1px solid #2d2f3a; border-radius: 0.5rem; padding: 1rem;
+    border: 1px solid var(--rustview-border); border-radius: 0.5rem; padding: 1rem;
     display: flex; flex-direction: column; gap: 0.75rem;
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--rustview-secondary-bg);
 }
 .rustview-form-submit button {
-    width: 100%; padding: 0.5rem 1rem; background: #ff4b4b; color: white;
+    width: 100%; padding: 0.5rem 1rem; background: var(--rustview-primary); color: white;
     border: none; border-radius: 0.375rem; font-size: 0.875rem; font-weight: 600;
     cursor: pointer; transition: background 0.2s;
 }
@@ -878,7 +931,7 @@ body:has(.rustview-sidebar) { padding-left: 300px; }
 /* Image */
 .rustview-image { display: flex; flex-direction: column; gap: 0.25rem; }
 .rustview-image img { max-width: 100%; height: auto; border-radius: 0.375rem; }
-.rustview-image small { font-size: 0.8125rem; color: #808495; text-align: center; }
+.rustview-image small { font-size: 0.8125rem; color: var(--rustview-text-secondary); text-align: center; }
 
 /* Audio */
 .rustview-audio audio { width: 100%; }
@@ -902,20 +955,20 @@ body:has(.rustview-sidebar) { padding-left: 300px; }
     display: flex; align-items: center; justify-content: center;
 }
 .rustview-modal-dialog {
-    background: #1a1b26; border: 1px solid #2d2f3a; border-radius: 0.5rem;
+    background: var(--rustview-surface); border: 1px solid var(--rustview-border); border-radius: 0.5rem;
     width: 90%; max-width: 560px; max-height: 80vh; overflow-y: auto;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 }
 .rustview-modal-header {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 1rem 1.25rem; border-bottom: 1px solid #2d2f3a;
+    padding: 1rem 1.25rem; border-bottom: 1px solid var(--rustview-border);
 }
-.rustview-modal-header h3 { font-size: 1.125rem; font-weight: 600; color: #fafafa; }
+.rustview-modal-header h3 { font-size: 1.125rem; font-weight: 600; color: var(--rustview-fg); }
 .rustview-modal-close {
-    background: none; border: none; color: #a3a8b8; font-size: 1.25rem;
+    background: none; border: none; color: var(--rustview-text-secondary); font-size: 1.25rem;
     cursor: pointer; padding: 0.25rem;
 }
-.rustview-modal-close:hover { color: #ff4b4b; }
+.rustview-modal-close:hover { color: var(--rustview-primary); }
 .rustview-modal-body {
     padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem;
 }
@@ -941,7 +994,7 @@ body:has(.rustview-sidebar) { padding-left: 300px; }
 
 /* Charts */
 .rustview-chart { display: flex; flex-direction: column; gap: 0.5rem; }
-.rustview-chart-title { font-size: 0.9375rem; font-weight: 600; color: #fafafa; }
+.rustview-chart-title { font-size: 0.9375rem; font-weight: 600; color: var(--rustview-fg); }
 .rustview-chart-svg svg { width: 100%; height: auto; }
 "#;
 
@@ -1008,6 +1061,10 @@ const BROWSER_SHIM: &str = r#"
                     console.warn('[RustView] Unknown patch op:', patch.op);
             }
         }
+        // Re-attach event listeners once after all patches have been applied so
+        // that every new or updated element gets its handler regardless of which
+        // patch types were present in this batch.
+        attachEventListeners();
     }
 
     function applyFullRender(root) {
@@ -1017,7 +1074,6 @@ const BROWSER_SHIM: &str = r#"
             for (const child of (root.children || [])) {
                 container.appendChild(createDOMNode(child));
             }
-            attachEventListeners();
         }
     }
 
@@ -1026,7 +1082,6 @@ const BROWSER_SHIM: &str = r#"
         if (el) {
             const newEl = createDOMNode(node);
             el.parentNode.replaceChild(newEl, el);
-            attachEventListeners();
         }
     }
 
@@ -1070,7 +1125,6 @@ const BROWSER_SHIM: &str = r#"
         const parent = document.getElementById(parentId);
         if (parent) {
             parent.appendChild(createDOMNode(node));
-            attachEventListeners();
         }
     }
 
@@ -1409,8 +1463,61 @@ mod tests {
     #[test]
     fn test_theme_default() {
         let theme = Theme::default();
+        // Default must be the dark theme
         assert_eq!(theme.background, "#0e1117");
         assert_eq!(theme.primary, "#ff4b4b");
+    }
+
+    #[test]
+    fn test_theme_dark_preset() {
+        let theme = Theme::dark();
+        assert_eq!(theme.background, "#0e1117");
+        assert_eq!(theme.foreground, "#fafafa");
+        assert_eq!(theme.primary, "#ff4b4b");
+        assert_eq!(theme.secondary_bg, "#262730");
+        assert_eq!(theme.border, "#4a4a5a");
+        assert_eq!(theme.text_secondary, "#a3a8b8");
+        assert_eq!(theme.surface, "#1a1b26");
+        assert_eq!(theme.code_fg, "#c0caf5");
+    }
+
+    #[test]
+    fn test_theme_light_preset() {
+        let theme = Theme::light();
+        assert_eq!(theme.background, "#ffffff");
+        assert_eq!(theme.foreground, "#0e1117");
+        assert_eq!(theme.primary, "#ff4b4b");
+        assert_eq!(theme.secondary_bg, "#f0f2f6");
+        assert_eq!(theme.border, "#d0d3de");
+        assert_eq!(theme.text_secondary, "#6c717e");
+        assert_eq!(theme.surface, "#e8eaf0");
+        assert_eq!(theme.code_fg, "#1e2040");
+    }
+
+    #[test]
+    fn test_theme_light_css_vars() {
+        let theme = Theme::light();
+        let css = theme.to_css_vars();
+        assert!(css.contains("--rustview-bg: #ffffff"));
+        assert!(css.contains("--rustview-fg: #0e1117"));
+        assert!(css.contains("--rustview-primary: #ff4b4b"));
+        assert!(css.contains("--rustview-surface: #e8eaf0"));
+        assert!(css.contains("--rustview-code-fg: #1e2040"));
+    }
+
+    #[test]
+    fn test_theme_default_is_dark() {
+        // Default and dark() must return identical colors.
+        let d = Theme::default();
+        let dark = Theme::dark();
+        assert_eq!(d.background, dark.background);
+        assert_eq!(d.foreground, dark.foreground);
+        assert_eq!(d.primary, dark.primary);
+        assert_eq!(d.secondary_bg, dark.secondary_bg);
+        assert_eq!(d.border, dark.border);
+        assert_eq!(d.text_secondary, dark.text_secondary);
+        assert_eq!(d.surface, dark.surface);
+        assert_eq!(d.code_fg, dark.code_fg);
     }
 
     #[test]
@@ -1420,6 +1527,8 @@ mod tests {
         assert!(css.contains("--rustview-bg: #0e1117"));
         assert!(css.contains("--rustview-primary: #ff4b4b"));
         assert!(css.contains("--rustview-fg: #fafafa"));
+        assert!(css.contains("--rustview-surface: #1a1b26"));
+        assert!(css.contains("--rustview-code-fg: #c0caf5"));
     }
 
     #[test]

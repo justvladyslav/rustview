@@ -1,4 +1,4 @@
-/// Example: RustView Dashboard — showcases v0.2 widgets and layout.
+/// Example: RustView Dashboard
 use rustview::prelude::*;
 
 fn dashboard(ui: &mut Ui) {
