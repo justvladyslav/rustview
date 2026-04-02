@@ -227,6 +227,32 @@ pub struct RustViewConfig {
     pub layout: Layout,
     /// Automatically open the browser on startup. Default: false.
     pub open_browser: bool,
+    /// Microsoft Clarity project ID. When `Some`, the Clarity tracking script
+    /// is injected into the page `<head>`. When `None` (default), no Clarity
+    /// code is emitted.
+    ///
+    /// ```rust
+    /// use rustview::server::RustViewConfig;
+    ///
+    /// let config = RustViewConfig {
+    ///     clarity_id: Some("abc123xyz".into()),
+    ///     ..Default::default()
+    /// };
+    /// ```
+    pub clarity_id: Option<String>,
+    /// Google Analytics 4 Measurement ID (e.g. `"G-XXXXXXXXXX"`). When
+    /// `Some`, the gtag.js script is injected into the page `<head>`. When
+    /// `None` (default), no GA code is emitted.
+    ///
+    /// ```rust
+    /// use rustview::server::RustViewConfig;
+    ///
+    /// let config = RustViewConfig {
+    ///     ga_id: Some("G-XXXXXXXXXX".into()),
+    ///     ..Default::default()
+    /// };
+    /// ```
+    pub ga_id: Option<String>,
 }
 
 impl Default for RustViewConfig {
@@ -239,8 +265,36 @@ impl Default for RustViewConfig {
             theme: Theme::default(),
             layout: Layout::default(),
             open_browser: false,
+            clarity_id: None,
+            ga_id: None,
         }
     }
+}
+
+/// Build the analytics `<script>` tags to inject into `<head>`.
+///
+/// Returns an empty string when both IDs are `None`.
+fn analytics_scripts_html(clarity_id: Option<&str>, ga_id: Option<&str>) -> String {
+    let mut scripts = String::new();
+
+    if let Some(id) = ga_id {
+        scripts.push_str(&format!(
+            r#"<script async src="https://www.googletagmanager.com/gtag/js?id={id}"></script>
+<script>window.dataLayer=window.dataLayer||[];function gtag(){{dataLayer.push(arguments);}}gtag('js',new Date());gtag('config','{id}');</script>
+"#,
+            id = id
+        ));
+    }
+
+    if let Some(id) = clarity_id {
+        scripts.push_str(&format!(
+            r#"<script>(function(c,l,a,r,i,t,y){{c[a]=c[a]||function(){{(c[a].q=c[a].q||[]).push(arguments)}};t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);}})(window,document,"clarity","script","{id}");</script>
+"#,
+            id = id
+        ));
+    }
+
+    scripts
 }
 
 /// Shared application state.
@@ -304,7 +358,13 @@ fn run_app_and_diff(state: &AppState, session_id: &Uuid) -> Option<(VNode, Vec<P
 }
 
 /// Render the initial HTML page.
-fn render_initial_html(tree: &VNode, session_id: Uuid, title: &str, theme_css: &str) -> String {
+fn render_initial_html(
+    tree: &VNode,
+    session_id: Uuid,
+    title: &str,
+    theme_css: &str,
+    analytics: &str,
+) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -312,20 +372,22 @@ fn render_initial_html(tree: &VNode, session_id: Uuid, title: &str, theme_css: &
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
-    <style>{CSS}
+    {analytics}<style>{css}
 {theme_css}</style>
 </head>
 <body>
-    <div id="rustview-root" class="rustview-app">{}</div>
+    <div id="rustview-root" class="rustview-app">{body}</div>
     <script>
-        const SESSION_ID = "{}";
-        {}
+        const SESSION_ID = "{session_id}";
+        {shim}
     </script>
 </body>
 </html>"#,
-        vnode_to_html(tree),
-        session_id,
-        BROWSER_SHIM
+        analytics = analytics,
+        css = CSS,
+        body = vnode_to_html(tree),
+        session_id = session_id,
+        shim = BROWSER_SHIM
     )
 }
 
@@ -408,14 +470,19 @@ async fn index_handler(State(state): State<Arc<AppState>>) -> Html<String> {
     let theme_css = state.config.theme.to_css_vars();
     let layout_css = state.config.layout.to_css_vars();
     let custom_css = format!("{}\n:root {{\n  {}\n}}", theme_css, layout_css);
+    let analytics = analytics_scripts_html(
+        state.config.clarity_id.as_deref(),
+        state.config.ga_id.as_deref(),
+    );
     let html = if let Some((tree, _)) = run_app_and_diff(&state, &session_id) {
-        render_initial_html(&tree, session_id, title, &custom_css)
+        render_initial_html(&tree, session_id, title, &custom_css, &analytics)
     } else {
         render_initial_html(
             &VNode::new("rustview-root", "div").with_attr("class", "rustview-app"),
             session_id,
             title,
             &custom_css,
+            &analytics,
         )
     };
 
@@ -1645,5 +1712,81 @@ mod tests {
         assert!(CSS.contains("--rustview-padding"));
         assert!(CSS.contains("max-width: var(--rustview-max-width)"));
         assert!(CSS.contains("padding: var(--rustview-padding)"));
+    }
+
+    // ── Analytics ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_analytics_both_none_returns_empty() {
+        let scripts = analytics_scripts_html(None, None);
+        assert!(scripts.is_empty());
+    }
+
+    #[test]
+    fn test_analytics_only_clarity() {
+        let scripts = analytics_scripts_html(Some("testclarity123"), None);
+        assert!(scripts.contains("clarity.ms/tag/"));
+        assert!(scripts.contains("testclarity123"));
+        assert!(!scripts.contains("googletagmanager"));
+    }
+
+    #[test]
+    fn test_analytics_only_ga() {
+        let scripts = analytics_scripts_html(None, Some("G-TESTID123"));
+        assert!(scripts.contains("googletagmanager.com/gtag/js?id=G-TESTID123"));
+        assert!(scripts.contains("gtag('config','G-TESTID123')"));
+        assert!(!scripts.contains("clarity.ms"));
+    }
+
+    #[test]
+    fn test_analytics_both_present() {
+        let scripts = analytics_scripts_html(Some("clid"), Some("G-GAID"));
+        assert!(scripts.contains("clarity.ms/tag/"));
+        assert!(scripts.contains("clid"));
+        assert!(scripts.contains("googletagmanager.com/gtag/js?id=G-GAID"));
+        assert!(scripts.contains("G-GAID"));
+    }
+
+    #[test]
+    fn test_config_default_analytics_disabled() {
+        let config = RustViewConfig::default();
+        assert!(config.clarity_id.is_none());
+        assert!(config.ga_id.is_none());
+    }
+
+    #[test]
+    fn test_render_html_no_analytics_when_none() {
+        
+
+        let sid = Uuid::nil();
+        let tree = VNode::new("rustview-root", "div").with_attr("class", "rustview-app");
+        let html = render_initial_html(&tree, sid, "Test", ":root {}", "");
+        assert!(!html.contains("clarity.ms"));
+        assert!(!html.contains("googletagmanager"));
+    }
+
+    #[test]
+    fn test_render_html_injects_clarity_when_set() {
+        
+
+        let sid = Uuid::nil();
+        let tree = VNode::new("rustview-root", "div").with_attr("class", "rustview-app");
+        let analytics = analytics_scripts_html(Some("myproject"), None);
+        let html = render_initial_html(&tree, sid, "Test", ":root {}", &analytics);
+        assert!(html.contains("clarity.ms/tag/"));
+        assert!(html.contains("myproject"));
+        assert!(!html.contains("googletagmanager"));
+    }
+
+    #[test]
+    fn test_render_html_injects_ga_when_set() {
+        
+
+        let sid = Uuid::nil();
+        let tree = VNode::new("rustview-root", "div").with_attr("class", "rustview-app");
+        let analytics = analytics_scripts_html(None, Some("G-ABC123"));
+        let html = render_initial_html(&tree, sid, "Test", ":root {}", &analytics);
+        assert!(html.contains("googletagmanager.com/gtag/js?id=G-ABC123"));
+        assert!(!html.contains("clarity.ms"));
     }
 }
