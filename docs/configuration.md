@@ -27,6 +27,8 @@ rustview::run_with_config(app, config);
 | `max_upload_bytes` | `usize` | `52_428_800` | Max upload size (50 MB) |
 | `theme` | `Theme` | Dark theme | Color theme |
 | `layout` | `Layout` | Full width, 2rem padding | Body layout options |
+| `clarity_id` | `Option<String>` | `None` | Microsoft Clarity project ID (omit to disable) |
+| `ga_id` | `Option<String>` | `None` | Google Analytics 4 Measurement ID (omit to disable) |
 
 ---
 
@@ -156,6 +158,46 @@ let theme = Theme {
     text_secondary: "#8892b0".into(),
     surface: "#060d1a".into(),
     code_fg: "#a8d8ea".into(),
+};
+```
+
+---
+
+## Analytics
+
+RustView supports optional analytics integrations. When an ID field is `None` (the default), **no tracking code is emitted** in the generated HTML — not even an empty script tag.
+
+### Microsoft Clarity
+
+Provide your [Clarity](https://clarity.microsoft.com/) project ID to enable session recording and heatmaps:
+
+```rust
+let config = RustViewConfig {
+    clarity_id: Some("your_clarity_project_id".into()),
+    ..Default::default()
+};
+```
+
+### Google Analytics 4
+
+Provide your GA4 Measurement ID (starts with `G-`) to enable Google Analytics:
+
+```rust
+let config = RustViewConfig {
+    ga_id: Some("G-XXXXXXXXXX".into()),
+    ..Default::default()
+};
+```
+
+### Both at the same time
+
+Both services can be active simultaneously:
+
+```rust
+let config = RustViewConfig {
+    clarity_id: Some("abc123xyz".into()),
+    ga_id: Some("G-XXXXXXXXXX".into()),
+    ..Default::default()
 };
 ```
 
