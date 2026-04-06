@@ -4,6 +4,17 @@
 /// shim knows how to render and handle events for.
 use crate::vdom::VNode;
 
+/// Escape a string for safe inclusion as SVG/XML text content or attribute value.
+///
+/// SVG is XML; the standard HTML escapes apply inside text nodes and attributes.
+fn svg_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 /// Render a text input widget as a VNode.
 pub fn render_text_input(widget_id: &str, label: &str, value: &str) -> VNode {
     VNode::new(widget_id, "div")
@@ -1080,7 +1091,8 @@ fn generate_bar_chart_svg(_widget_id: &str, data: &[(&str, f64)]) -> String {
         let label_x = x + bar_w / 2.0;
         let label_y = CHART_PADDING + plot_h + 16.0;
         bars.push_str(&format!(
-            "<text x=\"{label_x:.1}\" y=\"{label_y:.1}\" fill=\"#a3a8b8\" text-anchor=\"middle\" font-size=\"11\">{label}</text>"
+            "<text x=\"{label_x:.1}\" y=\"{label_y:.1}\" fill=\"#a3a8b8\" text-anchor=\"middle\" font-size=\"11\">{}</text>",
+            svg_escape(label)
         ));
     }
 
@@ -2202,5 +2214,37 @@ mod tests {
             assert_eq!(node.tag, "span");
             assert!(node.attrs.get("style").unwrap().len() > 0);
         }
+    }
+
+    // ── Security: SVG escaping ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_svg_escape_basic() {
+        assert_eq!(svg_escape("<script>alert(1)</script>"), "&lt;script&gt;alert(1)&lt;/script&gt;");
+        assert_eq!(svg_escape("a & b"), "a &amp; b");
+        assert_eq!(svg_escape("\"quoted\""), "&quot;quoted&quot;");
+        assert_eq!(svg_escape("it's"), "it&#39;s");
+    }
+
+    #[test]
+    fn test_bar_chart_label_xss_escaped() {
+        let data = &[("</text><script>alert(1)</script>", 1.0_f64)];
+        let node = render_bar_chart("chart1", "Test", data);
+        let svg_div = &node.children[1]; // title=[0], svg container=[1]
+        let svg = svg_div.attrs.get("data-innerHTML").unwrap();
+        // A raw <script> tag must not be present anywhere in the output
+        assert!(!svg.contains("<script>"), "<script> tag must not appear verbatim in SVG");
+        // The injected label payload should appear in its escaped form
+        assert!(svg.contains("&lt;script&gt;"), "script tag should be entity-escaped in label");
+        assert!(svg.contains("&lt;/text&gt;"), "label's closing-text should be entity-escaped");
+    }
+
+    #[test]
+    fn test_bar_chart_safe_label_preserved() {
+        let data = &[("Revenue", 42.0_f64)];
+        let node = render_bar_chart("chart2", "Sales", data);
+        let svg_div = &node.children[1];
+        let svg = svg_div.attrs.get("data-innerHTML").unwrap();
+        assert!(svg.contains("Revenue"), "normal label should be present");
     }
 }

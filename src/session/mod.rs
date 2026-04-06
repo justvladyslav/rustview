@@ -6,6 +6,7 @@
 use dashmap::DashMap;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -83,6 +84,9 @@ impl Default for Session {
 #[derive(Debug, Clone)]
 pub struct SessionStore {
     sessions: Arc<DashMap<Uuid, Session>>,
+    /// Atomic count of live sessions — kept in sync with `sessions` so that
+    /// cap checks and increments are a single atomic operation (no TOCTOU race).
+    count: Arc<AtomicUsize>,
     /// TTL for session expiration (default: 24 hours).
     ttl: Duration,
 }
@@ -92,6 +96,7 @@ impl SessionStore {
     pub fn new() -> Self {
         SessionStore {
             sessions: Arc::new(DashMap::new()),
+            count: Arc::new(AtomicUsize::new(0)),
             ttl: DEFAULT_SESSION_TTL,
         }
     }
@@ -100,6 +105,7 @@ impl SessionStore {
     pub fn with_ttl(ttl: Duration) -> Self {
         SessionStore {
             sessions: Arc::new(DashMap::new()),
+            count: Arc::new(AtomicUsize::new(0)),
             ttl,
         }
     }
@@ -109,7 +115,40 @@ impl SessionStore {
         let session = Session::new();
         let id = session.id;
         self.sessions.insert(id, session);
+        self.count.fetch_add(1, Ordering::Relaxed);
         id
+    }
+
+    /// Attempt to create a new session, respecting the given cap.
+    ///
+    /// The cap check and slot reservation are performed atomically via an
+    /// `AtomicUsize` counter, so concurrent callers cannot all slip past the
+    /// same limit check (TOCTOU-safe).
+    ///
+    /// Passing `max = 0` disables the cap entirely (unlimited sessions).
+    ///
+    /// Returns `Some(session_id)` when a slot was available, or `None` when the
+    /// cap has been reached.
+    pub fn try_create_session(&self, max: usize) -> Option<Uuid> {
+        // max == 0 means "unlimited" — skip the cap check entirely.
+        if max == 0 {
+            let session = Session::new();
+            let id = session.id;
+            self.sessions.insert(id, session);
+            self.count.fetch_add(1, Ordering::Relaxed);
+            return Some(id);
+        }
+        // Atomically reserve a slot. `fetch_add` returns the *previous* value,
+        // so if it was already >= max we release the reservation and bail.
+        let prev = self.count.fetch_add(1, Ordering::Relaxed);
+        if prev >= max {
+            self.count.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        }
+        let session = Session::new();
+        let id = session.id;
+        self.sessions.insert(id, session);
+        Some(id)
     }
 
     /// Get a reference to a session by ID. Panics are not generated;
@@ -118,7 +157,9 @@ impl SessionStore {
         let session_ref = self.sessions.get(id)?;
         if session_ref.is_expired(self.ttl) {
             drop(session_ref);
-            self.sessions.remove(id);
+            if self.sessions.remove(id).is_some() {
+                self.count.fetch_sub(1, Ordering::Relaxed);
+            }
             return None;
         }
         Some(session_ref)
@@ -133,7 +174,9 @@ impl SessionStore {
         let mut session_ref = self.sessions.get_mut(id)?;
         if session_ref.is_expired(self.ttl) {
             drop(session_ref);
-            self.sessions.remove(id);
+            if self.sessions.remove(id).is_some() {
+                self.count.fetch_sub(1, Ordering::Relaxed);
+            }
             return None;
         }
         session_ref.touch();
@@ -142,12 +185,15 @@ impl SessionStore {
 
     /// Remove a session by ID.
     pub fn remove_session(&self, id: &Uuid) -> Option<Session> {
-        self.sessions.remove(id).map(|(_, s)| s)
+        self.sessions.remove(id).map(|(_, s)| {
+            self.count.fetch_sub(1, Ordering::Relaxed);
+            s
+        })
     }
 
     /// Get the number of active sessions.
     pub fn session_count(&self) -> usize {
-        self.sessions.len()
+        self.count.load(Ordering::Relaxed)
     }
 
     /// Remove all expired sessions. Returns the number of sessions removed.
@@ -159,9 +205,14 @@ impl SessionStore {
             .filter(|entry| entry.value().is_expired(ttl))
             .map(|entry| *entry.key())
             .collect();
-        let count = expired_ids.len();
+        let mut count = 0;
         for id in expired_ids {
-            self.sessions.remove(&id);
+            // Only decrement when the entry was actually present (lazy expiry
+            // in get_session/get_session_mut might have already removed it).
+            if self.sessions.remove(&id).is_some() {
+                self.count.fetch_sub(1, Ordering::Relaxed);
+                count += 1;
+            }
         }
         count
     }
@@ -338,5 +389,46 @@ mod tests {
         // Wait a bit more — session should still be alive because we touched it
         std::thread::sleep(Duration::from_millis(120));
         assert!(store.get_session(&id).is_some());
+    }
+
+    #[test]
+    fn test_try_create_session_under_cap() {
+        let store = SessionStore::new();
+        let id = store.try_create_session(2);
+        assert!(id.is_some());
+        assert_eq!(store.session_count(), 1);
+    }
+
+    #[test]
+    fn test_try_create_session_at_cap_returns_none() {
+        let store = SessionStore::new();
+        assert!(store.try_create_session(2).is_some());
+        assert!(store.try_create_session(2).is_some());
+        // Cap reached — third attempt must fail without changing count.
+        assert!(store.try_create_session(2).is_none());
+        assert_eq!(store.session_count(), 2);
+    }
+
+    #[test]
+    fn test_try_create_session_slot_released_after_remove() {
+        let store = SessionStore::new();
+        let id = store.try_create_session(1).expect("first slot must succeed");
+        assert!(store.try_create_session(1).is_none(), "cap hit");
+        store.remove_session(&id);
+        assert_eq!(store.session_count(), 0);
+        // Slot freed — should succeed again.
+        assert!(store.try_create_session(1).is_some());
+    }
+
+    #[test]
+    fn test_session_count_tracks_lazy_expiry() {
+        let store = SessionStore::with_ttl(Duration::from_millis(50));
+        let id = store.create_session();
+        assert_eq!(store.session_count(), 1);
+
+        std::thread::sleep(Duration::from_millis(100));
+        // Lazy expiry via get_session should decrement the counter.
+        assert!(store.get_session(&id).is_none());
+        assert_eq!(store.session_count(), 0);
     }
 }

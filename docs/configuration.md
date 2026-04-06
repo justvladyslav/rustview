@@ -27,8 +27,11 @@ rustview::run_with_config(app, config);
 | `max_upload_bytes` | `usize` | `52_428_800` | Max upload size (50 MB) |
 | `theme` | `Theme` | Dark theme | Color theme |
 | `layout` | `Layout` | Full width, 2rem padding | Body layout options |
+| `open_browser` | `bool` | `false` | Open the browser automatically on startup |
 | `clarity_id` | `Option<String>` | `None` | Microsoft Clarity project ID (omit to disable) |
 | `ga_id` | `Option<String>` | `None` | Google Analytics 4 Measurement ID (omit to disable) |
+| `share` | `bool` | `false` | Create an instant public URL via `bore.pub` tunnel |
+| `max_sessions` | `usize` | `1000` | Maximum number of active sessions to keep; helps guard against abuse/DoS and may need tuning when `share: true` is enabled |
 
 ---
 
@@ -200,6 +203,42 @@ let config = RustViewConfig {
     ..Default::default()
 };
 ```
+
+---
+
+## Share / Public URL
+
+Setting `share: true` opens a reverse TCP tunnel to [bore.pub](https://github.com/ekzhang/bore) on startup. RustView prints a `http://bore.pub:<port>` URL that anyone on the internet can paste into their browser to reach your local app — no account, no installation, and no extra configuration required.
+
+```rust
+use rustview::prelude::*;
+
+fn app(ui: &mut Ui) {
+    ui.write("Hello from a public URL!");
+}
+
+fn main() {
+    rustview::run_with_config(app, RustViewConfig {
+        share: true,
+        ..Default::default()
+    });
+}
+```
+
+When the tunnel is ready, you will see a line like:
+
+```
+   Public share URL: http://bore.pub:52341
+   Share this link so others can reach your app.
+   Press Ctrl+C to stop.
+```
+
+### Notes
+
+- The tunnel is powered by the open-source [bore](https://github.com/ekzhang/bore) project and the free public server at `bore.pub`. No registration or API token is needed.
+- The assigned port changes every time the app restarts.
+- If `bore.pub` is unreachable (e.g. firewall blocks outbound TCP on port 7835), RustView logs a warning and continues running locally — the tunnel failure never crashes the server.
+- **Security:** the URL exposes your app to the entire internet with no authentication. Only set `share: true` for apps you are comfortable making public.
 
 ---
 

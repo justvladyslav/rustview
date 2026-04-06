@@ -6,10 +6,11 @@
 /// - POST /event — widget events from browser
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
+    middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
-        Html, IntoResponse,
+        Html, IntoResponse, Response,
     },
     routing::{get, post},
     Json, Router,
@@ -18,6 +19,7 @@ use serde::Deserialize;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tower_http::limit::RequestBodyLimitLayer;
 use uuid::Uuid;
 
 use crate::session::SessionStore;
@@ -253,6 +255,40 @@ pub struct RustViewConfig {
     /// };
     /// ```
     pub ga_id: Option<String>,
+    /// Create an instant public share URL via a `bore.pub` TCP tunnel.
+    ///
+    /// When `true`, RustView opens a reverse tunnel to `bore.pub` on startup
+    /// and prints a `http://bore.pub:<port>` URL that anyone on the internet
+    /// can visit to reach your local app — no account or installation needed.
+    ///
+    /// **Security notice:** the tunnel exposes your app to the public internet.
+    /// Do not enable this for apps that contain sensitive data or that have no
+    /// access controls.
+    ///
+    /// Default: `false`.
+    ///
+    /// ```rust
+    /// use rustview::server::RustViewConfig;
+    ///
+    /// let config = RustViewConfig {
+    ///     share: true,
+    ///     ..Default::default()
+    /// };
+    /// ```
+    pub share: bool,
+    /// Maximum number of concurrent sessions the server will accept.
+    ///
+    /// Each browser tab that loads the app creates one session. When the cap is
+    /// reached, `GET /` returns `503 Service Unavailable` until existing
+    /// sessions expire or are cleaned up.
+    ///
+    /// This is the primary guard against memory-exhaustion DoS attacks when
+    /// `share: true` exposes the app to the public internet.
+    ///
+    /// Set to `0` to disable the cap entirely (unlimited sessions).
+    ///
+    /// Default: `1000`.
+    pub max_sessions: usize,
 }
 
 impl Default for RustViewConfig {
@@ -267,6 +303,8 @@ impl Default for RustViewConfig {
             open_browser: false,
             clarity_id: None,
             ga_id: None,
+            share: false,
+            max_sessions: 1000,
         }
     }
 }
@@ -274,27 +312,49 @@ impl Default for RustViewConfig {
 /// Build the analytics `<script>` tags to inject into `<head>`.
 ///
 /// Returns an empty string when both IDs are `None`.
+///
+/// IDs are validated against a conservative allowlist (`[A-Za-z0-9_-]`) before
+/// injection. Invalid IDs are skipped, and a warning is logged.
 fn analytics_scripts_html(clarity_id: Option<&str>, ga_id: Option<&str>) -> String {
     let mut scripts = String::new();
 
     if let Some(id) = ga_id {
-        scripts.push_str(&format!(
-            r#"<script async src="https://www.googletagmanager.com/gtag/js?id={id}"></script>
+        if is_safe_analytics_id(id) {
+            scripts.push_str(&format!(
+                r#"<script async src="https://www.googletagmanager.com/gtag/js?id={id}"></script>
 <script>window.dataLayer=window.dataLayer||[];function gtag(){{dataLayer.push(arguments);}}gtag('js',new Date());gtag('config','{id}');</script>
 "#,
-            id = id
-        ));
+                id = id
+            ));
+        } else {
+            tracing::warn!("ga_id contains unsafe characters and was not injected: {:?}", id);
+        }
     }
 
     if let Some(id) = clarity_id {
-        scripts.push_str(&format!(
-            r#"<script>(function(c,l,a,r,i,t,y){{c[a]=c[a]||function(){{(c[a].q=c[a].q||[]).push(arguments)}};t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);}})(window,document,"clarity","script","{id}");</script>
+        if is_safe_analytics_id(id) {
+            scripts.push_str(&format!(
+                r#"<script>(function(c,l,a,r,i,t,y){{c[a]=c[a]||function(){{(c[a].q=c[a].q||[]).push(arguments)}};t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);}})(window,document,"clarity","script","{id}");</script>
 "#,
-            id = id
-        ));
+                id = id
+            ));
+        } else {
+            tracing::warn!("clarity_id contains unsafe characters and was not injected: {:?}", id);
+        }
     }
 
     scripts
+}
+
+/// Returns `true` if `id` contains only characters that are safe to interpolate
+/// directly into a JavaScript string literal or HTML attribute without escaping.
+///
+/// Allowed: ASCII alphanumerics, `-`, `_`. This covers all real Clarity project
+/// IDs and all GA4 Measurement IDs (`G-XXXXXXXXXX`).
+fn is_safe_analytics_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Shared application state.
@@ -385,6 +445,7 @@ fn render_initial_html(
 </html>"#,
         analytics = analytics,
         css = CSS,
+        title = html_escape(title),
         body = vnode_to_html(tree),
         session_id = session_id,
         shim = BROWSER_SHIM
@@ -414,7 +475,7 @@ fn vnode_to_inner_html(node: &VNode) -> String {
     html.push('<');
     html.push_str(&node.tag);
 
-    html.push_str(&format!(" id=\"{}\"", node.id));
+    html.push_str(&format!(" id=\"{}\"", html_escape(&node.id)));
     
     // Extract innerHTML before adding attributes
     let mut inner_html = None;
@@ -458,8 +519,24 @@ fn html_escape(s: &str) -> String {
 }
 
 /// GET / — serve the initial HTML page.
-async fn index_handler(State(state): State<Arc<AppState>>) -> Html<String> {
-    let session_id = state.session_store.create_session();
+async fn index_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Guard against memory-exhaustion DoS: refuse new connections once the
+    // session cap is reached. The check-and-create is atomic (TOCTOU-safe)
+    // inside try_create_session. Sessions are reclaimed by the cleanup task
+    // (every 5 min) or when they naturally expire.
+    let Some(session_id) = state
+        .session_store
+        .try_create_session(state.config.max_sessions)
+    else {
+        tracing::warn!(
+            "Session cap ({}) reached — rejecting new connection",
+            state.config.max_sessions
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Html("503 Service Unavailable: server is at capacity".to_string()),
+        );
+    };
 
     // Create SSE channel for this session
     let (tx, _) = broadcast::channel(64);
@@ -486,7 +563,7 @@ async fn index_handler(State(state): State<Arc<AppState>>) -> Html<String> {
         )
     };
 
-    Html(html)
+    (StatusCode::OK, Html(html))
 }
 
 /// POST /event — handle widget events.
@@ -547,6 +624,28 @@ async fn sse_handler(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+/// Axum middleware that attaches basic security headers to every response.
+///
+/// - `X-Content-Type-Options: nosniff` — prevents MIME-type sniffing.
+/// - `X-Frame-Options: SAMEORIGIN` — blocks clickjacking via iframes from
+///   third-party origins.
+///
+/// These headers are safe to emit for all response types (HTML, JSON, SSE)
+/// and impose no functional overhead.
+async fn security_headers_middleware(request: axum::extract::Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("SAMEORIGIN"),
+    );
+    response
+}
+
 /// Build the Axum router.
 pub fn build_router(app_fn: impl Fn(&mut Ui) + Send + Sync + 'static) -> Router {
     build_router_with_state(Arc::new(AppState {
@@ -559,10 +658,13 @@ pub fn build_router(app_fn: impl Fn(&mut Ui) + Send + Sync + 'static) -> Router 
 
 /// Build the Axum router with pre-constructed shared state.
 fn build_router_with_state(state: Arc<AppState>) -> Router {
+    let max_body = state.config.max_upload_bytes;
     Router::new()
         .route("/", get(index_handler))
         .route("/event", post(event_handler))
         .route("/sse/{sid}", get(sse_handler))
+        .layer(RequestBodyLimitLayer::new(max_body))
+        .layer(middleware::from_fn(security_headers_middleware))
         .with_state(state)
 }
 
@@ -610,7 +712,7 @@ pub async fn run_with_config(
         }
     });
 
-    tracing::info!("RustView running at http://{}", state.config.bind);
+    tracing::info!("   RustView running at http://{}", state.config.bind);
 
     if state.config.open_browser {
         let url = format!("http://{}", state.config.bind);
@@ -626,7 +728,42 @@ pub async fn run_with_config(
         );
     }
 
+    // Bind the TCP listener first so the server is ready before the tunnel
+    // task begins advertising the public URL. This eliminates the race where
+    // bore.pub could forward incoming connections before axum is listening.
     let listener = tokio::net::TcpListener::bind(state.config.bind).await.unwrap();
+
+    // Start a public share tunnel when `share: true`.
+    if state.config.share {
+        let local_port = state.config.bind.port();
+        tokio::spawn(async move {
+            match bore_cli::client::Client::new("localhost", local_port, "bore.pub", 0, None).await
+            {
+                Ok(client) => {
+                    let remote_port = client.remote_port();
+                    tracing::info!(
+                        "   Share URL: http://bore.pub:{} (powered by bore.pub)",
+                        remote_port
+                    );
+                    println!(
+                        "\n   Public share URL: http://bore.pub:{}\n   Share this link so others can reach your app.\n   Press Ctrl+C to stop.\n",
+                        remote_port
+                    );
+                    if let Err(e) = client.listen().await {
+                        tracing::warn!("Share tunnel closed: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Could not create share tunnel (bore.pub unreachable? \
+                         Ensure outbound TCP port 7835 is not blocked): {}",
+                        e
+                    );
+                }
+            }
+        });
+    }
+
     axum::serve(listener, router).await.unwrap();
 }
 
@@ -1788,5 +1925,283 @@ mod tests {
         let html = render_initial_html(&tree, sid, "Test", ":root {}", &analytics);
         assert!(html.contains("googletagmanager.com/gtag/js?id=G-ABC123"));
         assert!(!html.contains("clarity.ms"));
+    }
+
+    // ── Share / tunnel ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_config_default_share_is_false() {
+        let config = RustViewConfig::default();
+        assert!(!config.share, "share must default to false");
+    }
+
+    #[test]
+    fn test_config_share_can_be_enabled() {
+        let config = RustViewConfig {
+            share: true,
+            ..Default::default()
+        };
+        assert!(config.share);
+    }
+
+    #[test]
+    fn test_config_share_does_not_affect_other_defaults() {
+        let config = RustViewConfig {
+            share: true,
+            ..Default::default()
+        };
+        assert_eq!(config.bind.to_string(), "127.0.0.1:8501");
+        assert_eq!(config.title, "RustView App");
+        assert!(!config.open_browser);
+        assert!(config.clarity_id.is_none());
+        assert!(config.ga_id.is_none());
+    }
+
+    // ── Security fixes ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_title_html_escaped_in_render() {
+        let sid = Uuid::nil();
+        let tree = VNode::new("rustview-root", "div");
+        let html = render_initial_html(&tree, sid, "</title><script>alert(1)</script>", ":root {}", "");
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(html.contains("&lt;/title&gt;"));
+    }
+
+    #[test]
+    fn test_node_id_html_escaped() {
+        // id contains a double-quote that would otherwise break out of the attribute
+        let node = VNode::new("id\"onclick=\"bad", "div");
+        let html = vnode_to_inner_html(&node);
+        // Raw double-quote must not appear — it would allow attribute injection
+        assert!(!html.contains("id\"onclick"), "raw quote in id must not appear unescaped");
+        // The escaped form must be present
+        assert!(html.contains("&quot;"), "double-quote should be entity-escaped");
+    }
+
+    #[test]
+    fn test_is_safe_analytics_id_valid() {
+        assert!(is_safe_analytics_id("G-ABC123XYZ"));
+        assert!(is_safe_analytics_id("abc123xyz"));
+        assert!(is_safe_analytics_id("my-project_id"));
+    }
+
+    #[test]
+    fn test_is_safe_analytics_id_rejects_special_chars() {
+        assert!(!is_safe_analytics_id("id\");alert(1);//"));
+        assert!(!is_safe_analytics_id("abc<script>"));
+        assert!(!is_safe_analytics_id(""));
+        assert!(!is_safe_analytics_id("id with spaces"));
+        assert!(!is_safe_analytics_id(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn test_analytics_id_injection_blocked() {
+        let malicious_ga = "G-ABC\" onerror=\"alert(1)";
+        let result = analytics_scripts_html(None, Some(malicious_ga));
+        // Unsafe ID must not produce any script output
+        assert!(result.is_empty(), "malicious ga_id should produce no output");
+    }
+
+    #[test]
+    fn test_analytics_safe_id_still_works() {
+        let result = analytics_scripts_html(Some("myproject123"), Some("G-ABC123XYZ"));
+        assert!(result.contains("clarity.ms/tag/"));
+        assert!(result.contains("googletagmanager"));
+        assert!(result.contains("myproject123"));
+        assert!(result.contains("G-ABC123XYZ"));
+    }
+
+    // ── Session cap / DoS guard ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_default_config_max_sessions() {
+        let config = RustViewConfig::default();
+        assert_eq!(config.max_sessions, 1000);
+    }
+
+    #[test]
+    fn test_config_max_sessions_configurable() {
+        let config = RustViewConfig {
+            max_sessions: 50,
+            ..Default::default()
+        };
+        assert_eq!(config.max_sessions, 50);
+    }
+
+    #[test]
+    fn test_session_cap_enforced() {
+        let store = crate::session::SessionStore::new();
+        // Fill the store to the cap using the atomic try_create_session.
+        assert!(store.try_create_session(2).is_some());
+        assert!(store.try_create_session(2).is_some());
+        assert_eq!(store.session_count(), 2);
+
+        // At cap — further creation must be rejected atomically.
+        assert!(
+            store.try_create_session(2).is_none(),
+            "handler should reject when cap is reached"
+        );
+        // Count must not have changed.
+        assert_eq!(store.session_count(), 2);
+
+        // Under a higher cap — must still succeed.
+        assert!(
+            store.try_create_session(3).is_some(),
+            "handler should allow when under cap"
+        );
+    }
+
+    #[test]
+    fn test_session_cap_zero_means_unlimited() {
+        let store = crate::session::SessionStore::new();
+        // max == 0 should never block session creation.
+        for _ in 0..5 {
+            assert!(
+                store.try_create_session(0).is_some(),
+                "max_sessions=0 must allow unlimited sessions"
+            );
+        }
+        assert_eq!(store.session_count(), 5);
+    }
+
+    // ── Security headers ────────────────────────────────────────────────────────
+
+    /// Helper: build a minimal router backed by a no-op app function.
+    fn test_router() -> Router {
+        build_router_with_state(Arc::new(AppState {
+            session_store: crate::session::SessionStore::new(),
+            app_fn: Box::new(|_: &mut Ui| {}),
+            sse_channels: dashmap::DashMap::new(),
+            config: RustViewConfig::default(),
+        }))
+    }
+
+    #[tokio::test]
+    async fn security_headers_present_on_html_response() {
+        use tower::ServiceExt;
+        let app = test_router();
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers().get("x-content-type-options").map(|v| v.as_bytes()),
+            Some(b"nosniff".as_ref()),
+            "GET / must include X-Content-Type-Options: nosniff"
+        );
+        assert_eq!(
+            response.headers().get("x-frame-options").map(|v| v.as_bytes()),
+            Some(b"SAMEORIGIN".as_ref()),
+            "GET / must include X-Frame-Options: SAMEORIGIN"
+        );
+    }
+
+    #[tokio::test]
+    async fn security_headers_present_on_json_response() {
+        use tower::ServiceExt;
+        let app = test_router();
+        // POST /event with an unknown (but valid-sized) body — still gets headers
+        // even if the handler rejects it as a bad session.
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/event")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(r#"{"session_id":"00000000-0000-0000-0000-000000000000","widget_id":"w","value":0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.headers().get("x-content-type-options").map(|v| v.as_bytes()),
+            Some(b"nosniff".as_ref()),
+            "POST /event must include X-Content-Type-Options: nosniff"
+        );
+        assert_eq!(
+            response.headers().get("x-frame-options").map(|v| v.as_bytes()),
+            Some(b"SAMEORIGIN".as_ref()),
+            "POST /event must include X-Frame-Options: SAMEORIGIN"
+        );
+    }
+
+    // ── Body size limit ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn oversized_post_event_returns_413() {
+        use tower::ServiceExt;
+        let app = build_router_with_state(Arc::new(AppState {
+            session_store: crate::session::SessionStore::new(),
+            app_fn: Box::new(|_: &mut Ui| {}),
+            sse_channels: dashmap::DashMap::new(),
+            config: RustViewConfig {
+                max_upload_bytes: 16,
+                ..RustViewConfig::default()
+            },
+        }));
+        // Body is 17 bytes — one byte over the 16-byte limit.
+        let oversized_body = vec![b'a'; 17];
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/event")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(oversized_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "POST /event with body exceeding max_upload_bytes must return 413"
+        );
+        assert_eq!(
+            response.headers().get("x-content-type-options"),
+            Some(&HeaderValue::from_static("nosniff")),
+            "413 responses must still include x-content-type-options"
+        );
+        assert_eq!(
+            response.headers().get("x-frame-options"),
+            Some(&HeaderValue::from_static("SAMEORIGIN")),
+            "413 responses must still include x-frame-options"
+        );
+    }
+
+    #[tokio::test]
+    async fn within_limit_post_event_not_413() {
+        use tower::ServiceExt;
+        let app = build_router_with_state(Arc::new(AppState {
+            session_store: crate::session::SessionStore::new(),
+            app_fn: Box::new(|_: &mut Ui| {}),
+            sse_channels: dashmap::DashMap::new(),
+            config: RustViewConfig {
+                max_upload_bytes: 256,
+                ..RustViewConfig::default()
+            },
+        }));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/event")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(r#"{"session_id":"00000000-0000-0000-0000-000000000000","widget_id":"w","value":0}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "POST /event within limit must not return 413"
+        );
     }
 }
