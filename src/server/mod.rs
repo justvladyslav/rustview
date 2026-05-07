@@ -678,12 +678,6 @@ pub async fn run_with_config(
     app_fn: impl Fn(&mut Ui) + Send + Sync + 'static,
     config: RustViewConfig,
 ) {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rustview=info".into()),
-        )
-        .init();
 
     let state = Arc::new(AppState {
         session_store: SessionStore::with_ttl(std::time::Duration::from_secs(
